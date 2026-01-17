@@ -1,0 +1,9 @@
+streamlit
+paddlepaddle  # Or paddlepaddle-gpu if you have CUDA
+paddleocr
+langchain-openai
+python-dotenv
+opencv-python-headless
+numpy
+matplotlib # For the radar chart
+ollama

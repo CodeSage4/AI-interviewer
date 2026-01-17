@@ -1,0 +1,8 @@
+# .streamlit/config.toml
+[theme]
+primaryColor = "#00B4D8"  # Or your brand color (e.g., #00B4D8 for Cyan)
+backgroundColor = "#354055"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
+

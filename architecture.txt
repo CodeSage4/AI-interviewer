@@ -1,0 +1,26 @@
+[ Screen Capture ]
+        |
+        v
+[ OCR Layer ]
+  - EasyOCR
+  - Preprocessing
+        |
+        v
+[ Screen Understanding Layer ]
+  - classify: CODE / UI / DIAGRAM
+  - extract key elements
+  - detect risks
+        |
+        v
+[ Interview Logic ]
+  - Q1: understand
+  - Q2: probe
+  - memory across turns
+        |
+        v
+[ LLM (Mistral via Ollama) ]
+        |
+        v
+[ Scoring & Feedback ]
+  - rubric-based evaluation
+  - radar chart
