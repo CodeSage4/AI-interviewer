@@ -34,7 +34,10 @@ defaults = {
     "answers": [],
     "screen_text": "",
     "screen_summary": "",
-    "current_question": None
+    "current_question": None,
+    "last_intent": None,
+    "screen_type": None,
+    "image_turn": 0,
 }
 
 for k, v in defaults.items():
@@ -63,71 +66,105 @@ def extract_screen_text(image_bytes: bytes) -> str:
 # -------------------------------
 
 def classify_screen(screen_text: str) -> str:
-    """Detect what kind of presentation is on screen."""
+    """Detect what kind of screen is shown."""
     if "def " in screen_text or "{" in screen_text or "}" in screen_text:
         return "CODE"
     elif any(k in screen_text for k in ["API", "DB", "Service", "Gateway", "Cache"]):
         return "ARCHITECTURE"
+    elif "Upload" in screen_text or "Button" in screen_text or "Click" in screen_text or "Estimate" in screen_text:
+        return "UI"
     else:
         return "SLIDES"
 
 def analyze_code(screen_text: str):
-    """Very light reasoning over visible code."""
     issues = []
     if "(left + right)//2" in screen_text:
         issues.append("Possible integer overflow")
-    if "left <= right" in screen_text:
-        issues.append("Loop boundary seems correct")
     if "return -1" in screen_text:
         issues.append("Explicit not-found case handled")
     return issues
 
 def extract_components(screen_text: str):
-    """Pull visible components from diagrams."""
-    keywords = ["API", "Gateway", "FastAPI", "DB", "PostgreSQL", "Cache", "Service"]
+    keywords = ["API", "Gateway", "FastAPI", "PostgreSQL", "Cache", "Service"]
     return [k for k in keywords if k in screen_text]
 
+def analyze_ui(screen_text: str):
+    risks = []
+    if "A4" in screen_text:
+        risks.append("Scale calibration risk")
+    if "Upload" in screen_text:
+        risks.append("Image quality risk")
+    return risks
 
 
 # -------------------------------
 # OLLAMA QUESTION GENERATOR
 # -------------------------------
-def ask_ollama(screen_text: str, screen_summary: str, history: list, last_answer: str | None = None):
+def ask_ollama(screen_text, screen_summary, history, last_answer=None):
 
     if last_answer:
         history.append(f"Student: {last_answer}")
 
-    screen_type = classify_screen(screen_text)
+    # ---- Decide intent (UNDERSTAND → PROBE cycle) ----
+    if st.session_state.image_turn == 0:
+        intent = "UNDERSTAND"
+    elif st.session_state.image_turn == 1:
+        intent = "PROBE"
+    else:
+        intent = "UNDERSTAND"   # should rarely happen
 
-    # Pre-analysis for context
-    code_issues = analyze_code(screen_text) if screen_type == "CODE" else []
-    components = extract_components(screen_text) if screen_type == "ARCHITECTURE" else []
+    st.session_state.last_intent = intent
+
+    # ---- Screen analysis ----
+    screen_type = classify_screen(screen_text)
+    st.session_state.screen_type = screen_type
+
+    clean_text = "\n".join(
+        line.split(" (conf=")[0] for line in screen_text.splitlines()
+    )
+
+    code_issues = analyze_code(clean_text) if screen_type == "CODE" else []
+    components = extract_components(clean_text) if screen_type == "ARCHITECTURE" else []
+    ui_risks = analyze_ui(clean_text) if screen_type == "UI" else []
 
     prompt = f"""
 You are a technical interviewer.
 
+IMPORTANT: Your question must be based primarily on the CURRENT SCREEN,
+even if the conversation history discusses other images or topics.
+
 SCREEN TYPE: {screen_type}
 
 VISIBLE TEXT:
-{screen_text}
+{clean_text}
 
 HUMAN SUMMARY:
 {screen_summary}
 
 PRE-ANALYSIS:
-Code issues detected: {code_issues}
-Visible components: {components}
+Code issues: {code_issues}
+Components: {components}
+UI risks: {ui_risks}
 
 CONVERSATION HISTORY:
 {' '.join(history)}
 
+CURRENT INTENT: {intent}
+
+IF intent is UNDERSTAND:
+Ask ONE high-level question to understand what this screen does.
+
+IF intent is PROBE:
+Pick ONE specific element visible on the screen and ask:
+- either about a failure mode, 
+- or an edge case, 
+- or a concrete limitation.
+You must reference that element explicitly in the question.
+
 RULES:
 - Ask exactly ONE question.
-- The question MUST reference a specific line or component visible on screen.
-- If screen is CODE: focus on bugs, edge cases, or correctness.
-- If screen is ARCHITECTURE: focus on failures, scaling, or reliability.
-- If screen is SLIDES: challenge one claim or assumption.
-- No explanations. No thanks. Output ONLY the question.
+- Reference something visible on the screen.
+- No explanations. No meta talk. Only the question.
 """
 
     response = ollama.chat(
@@ -137,10 +174,8 @@ RULES:
 
     question = response["message"]["content"].strip()
 
-    if not question.endswith("?"):
-        question = f"Based on the visible content, what is the most critical risk here?"
-
     history.append(f"AI: {question}")
+    st.session_state.image_turn += 1
     return question
 
 
@@ -150,18 +185,15 @@ RULES:
 def compute_scores(answers):
     combined = " ".join(answers).lower()
 
-    tech_concepts = ["overflow","complexity","index","bounds","latency","scale","cache","retries"]
-    clarity_signals = [".", "because", "for example"]
-    originality_signals = ["instead", "better", "alternative", "i would change"]
-    implementation_signals = ["bug", "error", "fail", "edge case", "bottleneck"]
+    tech_concepts = ["overflow","complexity","latency","scale","index","bounds","segmentation","calibration"]
+    originality_terms = ["instead","better","alternative","i would change"]
+    implementation_terms = ["bug","error","edge case","fail","bottleneck","distortion"]
 
-    # ---- Metrics aligned with your requirements ----
-
-    technical_depth = min(10, len(set(tech_concepts) & set(combined.split())))
-    clarity = min(10, sum(1 for s in clarity_signals if s in combined) + 2)
-    originality = min(10, sum(1 for s in originality_signals if s in combined) + 1)
-    implementation = min(10, sum(1 for s in implementation_signals if s in combined) + 2)
-    confidence = min(10, len(answers))
+    technical_depth = min(10, len(set(tech_concepts) & set(combined.split())) + 2)
+    clarity = min(10, combined.count(".") + 2)
+    originality = min(10, sum(t in combined for t in originality_terms) + 1)
+    implementation = min(10, sum(t in combined for t in implementation_terms) + 2)
+    confidence = min(10, len(answers)//2)  # images, not verbosity
 
     return {
         "Technical Depth": technical_depth,
@@ -244,6 +276,7 @@ if image_input:
 
     # Generate first question if none exists
     if not st.session_state.current_question:
+        st.session_state.image_turn = 0
         with st.spinner("Generating first question..."):
             q = ask_ollama(
                 st.session_state.screen_text,
@@ -274,28 +307,34 @@ if st.button("Submit Answer"):
 
     st.session_state.answers.append(answer)
     turns_done = len(st.session_state.answers)
-    st.info(f"Turn {turns_done} / 4 completed")
 
-    # ---- FINISH AFTER 4 TURNS ----
+    # ---- CASE 1: Ask second question on SAME IMAGE ----
+    if st.session_state.last_intent == "UNDERSTAND":
+        next_q = ask_ollama(
+            st.session_state.screen_text,
+            st.session_state.screen_summary,
+            st.session_state.history,
+            last_answer=answer
+        )
+        st.session_state.current_question = next_q
+        st.rerun()
+
+    # ---- CASE 2: Finish interview after 4 answers ----
     if turns_done >= 4:
-        st.success("🎯 Interview Complete — Generating Evaluation")
+        with st.spinner("Computing scores..."):
+            scores = compute_scores(st.session_state.answers)
 
-        scores = compute_scores(st.session_state.answers)
+        st.subheader("📊 Scoring & Feedback")
         st.json(scores)
-
-        st.subheader("📊 Performance Radar Chart")
         plot_radar(scores)
-
         st.stop()
 
-    # ---- OTHERWISE: RESET SCREEN FOR NEXT TURN ----
+    # ---- CASE 3: Move to next image (after Q2 answered) ----
     st.session_state.screen_text = ""
     st.session_state.screen_summary = ""
     st.session_state.current_question = None
+    st.session_state.last_intent = None   # RESET for next image
+    st.session_state.image_turn = 0
 
-    st.success(
-        "✅ Answer saved. "
-        "Please upload your NEXT screen to continue."
-    )
-
+    st.success("Upload next screenshot")
     st.rerun()
