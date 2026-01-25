@@ -44,9 +44,14 @@ for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# -------------------------------
-# OCR FUNCTION (STRUCTURED OUTPUT)
-# -------------------------------
+# =========================================================
+# LAYER 1 — PERCEPTION (OCR)
+# =========================================================
+# Purpose:
+# Convert pixels → text with confidence scores.
+# No reasoning. No interpretation.
+# =========================================================
+
 def extract_screen_text(image_bytes: bytes) -> str:
     file_bytes = np.asarray(bytearray(image_bytes), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -61,9 +66,18 @@ def extract_screen_text(image_bytes: bytes) -> str:
 
     return "\n".join(lines) if lines else "(No reliable text detected)"
 
-# -------------------------------
-# SCREEN UNDERSTANDING LAYER
-# -------------------------------
+# =========================================================
+# LAYER 2 — SCREEN UNDERSTANDING & ANALYSIS (DETERMINISTIC)
+# =========================================================
+# Purpose:
+# Convert raw OCR text into structured meaning
+# - Screen type classification (UI / CODE / ARCHITECTURE / SLIDES)
+# - Risk & edge-case extraction
+# - Component identification
+#
+# This layer performs NO LLM calls.
+# =========================================================
+
 
 def classify_screen(screen_text: str) -> str:
     """Detect what kind of screen is shown."""
@@ -97,9 +111,25 @@ def analyze_ui(screen_text: str):
     return risks
 
 
-# -------------------------------
-# OLLAMA QUESTION GENERATOR
-# -------------------------------
+# =========================================================
+# LAYER 3 — STRUCTURED INTERVIEW ENGINE (LLM-GUIDED)
+# =========================================================
+# Purpose:
+# - Maintain interview intent (UNDERSTAND → PROBE)
+# - Ground questions in current screen only
+# - Prevent context leakage across images
+# =========================================================
+# Interview intent is explicit and stateful.
+# Each screen is discussed in two phases.
+
+INTERVIEW_INTENTS = ["UNDERSTAND", "PROBE"]
+
+INTENT_DESCRIPTIONS = {
+    "UNDERSTAND": "High-level comprehension of what is shown",
+    "PROBE": "Failure modes, edge cases, and design tradeoffs"
+}
+
+
 def ask_ollama(screen_text, screen_summary, history, last_answer=None):
 
     if last_answer:
@@ -128,7 +158,7 @@ def ask_ollama(screen_text, screen_summary, history, last_answer=None):
     ui_risks = analyze_ui(clean_text) if screen_type == "UI" else []
 
     prompt = f"""
-You are a technical interviewer.
+You are a senior technical interviewer.
 
 IMPORTANT: Your question must be based primarily on the CURRENT SCREEN,
 even if the conversation history discusses other images or topics.
@@ -155,11 +185,23 @@ IF intent is UNDERSTAND:
 Ask ONE high-level question to understand what this screen does.
 
 IF intent is PROBE:
-Pick ONE specific element visible on the screen and ask:
-- either about a failure mode, 
-- or an edge case, 
-- or a concrete limitation.
-You must reference that element explicitly in the question.
+You MUST NOT repeat the goal of the previous question.
+
+Your question must:
+- Assume the interviewer already understands WHAT the code/UI does
+- Focus on WHEN it breaks, scales poorly, or produces incorrect results
+- Target system-level risks, not trivial conditions
+
+BAD QUESTIONS (DO NOT ASK):
+- What does this function do?
+- What is an edge case when X equals Y?
+- Restating the same concept in different words
+
+GOOD QUESTIONS:
+- What assumption does this logic rely on that could silently fail?
+- How does this behave under invalid or extreme inputs?
+- What real-world condition would break this design?
+
 
 RULES:
 - Ask exactly ONE question.
@@ -182,52 +224,86 @@ RULES:
 # -------------------------------
 # MORE CREDIBLE SCORING
 # -------------------------------
-def compute_scores(answers):
-    combined = " ".join(answers).lower()
+import json
 
-    tech_concepts = ["overflow","complexity","latency","scale","index","bounds","segmentation","calibration"]
-    originality_terms = ["instead","better","alternative","i would change"]
-    implementation_terms = ["bug","error","edge case","fail","bottleneck","distortion"]
+def evaluate_interview(history):
+    transcript = "\n".join(history)
+    
+    eval_prompt = f"""
+    Review this technical interview transcript. 
+    Be logical, straightforward, and do not sugarcoat.
+    
+    TRANSCRIPT:
+    {transcript}
+    
+    Return ONLY a JSON object:
+    {{
+        "scores": {{
+            "Technical Depth": 1-10,
+            "Resilience": 1-10,
+            "Communication": 1-10,
+            "Edge Case Awareness": 1-10
+        }},
+        "feedback": {{
+            "strengths": "Short list",
+            "gaps": "Critical analysis of what they missed",
+            "verdict": "Hired/No Hire based on senior standards"
+        }}
+    }}
+    """
 
-    technical_depth = min(10, len(set(tech_concepts) & set(combined.split())) + 2)
-    clarity = min(10, combined.count(".") + 2)
-    originality = min(10, sum(t in combined for t in originality_terms) + 1)
-    implementation = min(10, sum(t in combined for t in implementation_terms) + 2)
-    confidence = min(10, len(answers)//2)  # images, not verbosity
-
-    return {
-        "Technical Depth": technical_depth,
-        "Clarity": clarity,
-        "Originality": originality,
-        "Implementation": implementation,
-        "Confidence": confidence,
-    }
+    try:
+        response = ollama.chat(
+            model="mistral",
+            messages=[{"role": "user", "content": eval_prompt}]
+        )
+        
+        # Strip potential markdown backticks from LLM response
+        raw_content = response["message"]["content"].strip().replace("```json", "").replace("```", "")
+        data = json.loads(raw_content)
+        return data
+    except Exception as e:
+        # Fallback if the LLM hallucinating JSON or fails
+        return {
+            "scores": {"Technical Depth": 5, "Resilience": 5, "Communication": 5, "Practicality": 5},
+            "summary": f"Evaluation error: {str(e)}"
+        }
+        
 
 
 # -------------------------------
 # RADAR CHART (SAFE VERSION)
 # -------------------------------
 def plot_radar(scores):
-    plt.close("all")   # IMPORTANT
-
+    plt.close("all") 
+    
     labels = list(scores.keys())
     values = list(scores.values())
 
-    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False)
+    # Complete the loop for the radar chart
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
     values += values[:1]
-    angles = np.append(angles, angles[0])
+    angles += angles[:1]
 
-    fig = plt.figure(figsize=(5,5))
-    ax = plt.subplot(111, polar=True)
-
-    ax.plot(angles, values)
-    ax.fill(angles, values, alpha=0.25)
-
+    fig, ax = plt.subplots(figsize=(4, 4), subplot_kw=dict(polar=True))
+    
+    # Draw one axe per variable + add labels
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(labels)
-    ax.set_yticks([2,4,6,8,10])
+    ax.set_xticklabels(labels, fontsize=9)
 
-    st.pyplot(fig)
+    # Draw ylabels
+    ax.set_rlabel_position(0)
+    plt.yticks([2, 4, 6, 8, 10], ["2", "4", "6", "8", "10"], color="grey", size=7)
+    plt.ylim(0, 10)
+
+    # Plot data
+    ax.plot(angles, values, linewidth=2, linestyle='solid')
+    ax.fill(angles, values, 'b', alpha=0.1)
+
+    # Center the plot in Streamlit
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.pyplot(fig)
 
 # -------------------------------
 # SIDEBAR
@@ -266,10 +342,6 @@ if image_input:
 
     st.success("Extracted screen text:")
     st.code(screen_text)
-
-    
-
-    
     
     if image_input:
 
@@ -299,11 +371,19 @@ if image_input:
 
 
 # -------------------------------
-# STEP 3 — STUDENT ANSWER
+# INTERVIEW — QUESTION & ANSWER
 # -------------------------------
 if st.session_state.current_question:
+    intent = st.session_state.last_intent
 
-    st.subheader("👨‍💼 Interview Question")
+    st.subheader(
+        "🧭 Understanding Phase"
+        if intent == "UNDERSTAND"
+        else "🔍 Probing Phase"
+    )
+
+    st.caption(INTENT_DESCRIPTIONS[intent])
+
     st.write(st.session_state.current_question)
 
     answer = st.text_area("Your answer")
@@ -313,8 +393,8 @@ if st.session_state.current_question:
         st.session_state.answers.append(answer)
         turns_done = len(st.session_state.answers)
 
-        # ---- CASE 1: Ask second question on SAME IMAGE ----
-        if st.session_state.last_intent == "UNDERSTAND":
+        # ---- STATE MACHINE: SAME IMAGE ----
+        if intent == "UNDERSTAND":
             next_q = ask_ollama(
                 st.session_state.screen_text,
                 st.session_state.screen_summary,
@@ -324,15 +404,28 @@ if st.session_state.current_question:
             st.session_state.current_question = next_q
             st.rerun()
 
-        # ---- CASE 2: Finish interview after 4 answers ----
+        # ---- STATE MACHINE: END INTERVIEW ----
+        # Inside the "Submit Answer" button logic:
         if turns_done >= 4:
-            scores = compute_scores(st.session_state.answers)
-            st.subheader("📊 Scoring & Feedback")
-            st.json(scores)
-            plot_radar(scores)
-            st.stop()
+            with st.spinner("Finalizing evaluation..."):
+                # CALL THE NEW ISOLATED FUNCTION
+                report = evaluate_interview(st.session_state.history)
+                
+                st.subheader("📊 Final Assessment")
+                # FIX: Check for 'summary' OR 'feedback' keys, or show a default message
+                summary_text = report.get("summary") or report.get("feedback", {}).get("verdict") or "Evaluation complete."
+                st.write(f"**Verdict:** {summary_text}")
+                
+                # Display the Radar Chart
+                plot_radar(report.get("scores", {}))
+                
+                # Show Gaps (if using the honest prompt)
+                if "feedback" in report and "gaps" in report["feedback"]:
+                    st.error(f"**Critical Gaps:** {report['feedback']['gaps']}")
+                    
+                st.stop()
 
-        # ---- CASE 3: Move to next image ----
+        # ---- STATE MACHINE: NEXT IMAGE ----
         st.session_state.screen_text = ""
         st.session_state.screen_summary = ""
         st.session_state.current_question = None
