@@ -16,7 +16,7 @@ This approach fails when:
 - UI screens change in real time  
 - Important context is visible *only on screen*
 
-Our goal was to build an interviewer that:
+My goal was to build an interviewer that:
 - Grounds every question in **what is currently visible**
 - Maintains a **coherent interview flow**
 - Separates **understanding from probing**
@@ -25,17 +25,18 @@ Our goal was to build an interviewer that:
 ---
 
 ## 🧠 Core Design Philosophy
+The system uses a single-loop interviewer interaction rather than a step-by-step wizard, allowing questions to adapt naturally as the presenter progresses.
 
-We deliberately **did NOT** build a real-time video system.
+I deliberately **did NOT** build a real-time video system.
 
-Instead, we chose a **high-quality turn-based loop**:
+Instead, I chose a **high-quality turn-based loop**:
 
-1. Presenter shows a screen  
-2. System captures a screenshot  
-3. OCR extracts visible text  
-4. Lightweight analysis classifies the screen  
-5. AI asks **two structured questions**  
-6. Process repeats across multiple images  
+1. Presenter shows a screen and uploads a screenshot  
+2. OCR extracts visible text  
+3. Lightweight analysis classifies the screen  
+4. Presenter briefly explains what is shown  
+5. AI asks two structured questions (understand → probe)  
+6. Process repeats across multiple screens  
 7. Final rubric-based evaluation + radar chart
 
 This avoids noisy streaming, improves reliability, and keeps the interview focused.
@@ -44,7 +45,7 @@ This avoids noisy streaming, improves reliability, and keeps the interview focus
 
 ## 🏗️ System Architecture
 
-Our pipeline has **three explicit layers**:
+This pipeline has **three explicit layers**:
 
 
 ---
@@ -54,7 +55,7 @@ Our pipeline has **three explicit layers**:
 ### 1️⃣ Screen Capture
 The presenter uploads a screenshot of what they are currently showing.
 
-We intentionally avoid live video because:
+I intentionally avoid live video because:
 - OCR is more reliable on static images  
 - Noise is reduced  
 - The system becomes deterministic and debuggable  
@@ -63,7 +64,7 @@ We intentionally avoid live video because:
 
 ### 2️⃣ OCR Layer (EasyOCR)
 
-For every image we:
+For every image I:
 - Run EasyOCR  
 - Extract visible text  
 - Keep confidence scores  
@@ -79,9 +80,9 @@ This allows the system to reason about:
 
 ### 3️⃣ Screen Understanding Layer
 
-Instead of dumping raw OCR into an LLM, we perform lightweight analysis:
+Instead of dumping raw OCR into an LLM, I perform lightweight analysis:
 
-We classify the screen as one of:
+I classify the screen as one of:
 - **CODE** → analyze variables, control flow, and potential bugs  
 - **ARCHITECTURE** → extract components like API, DB, Cache, Services  
 - **UI** → identify interaction risks (blur, scale, alignment, lighting)  
@@ -91,7 +92,7 @@ This is what makes the system *screen-aware*, not just text-aware.
 
 ---
 
-### 4️⃣ Structured Interview Logic (Two Questions Per Image)
+### 4️⃣ The questions are asked sequentially within a single interaction loop, not as separate UI steps.
 
 For each screenshot, the AI follows a deliberate pattern:
 
@@ -144,7 +145,7 @@ Scores are heuristic but **grounded in reasoning signals**, not word count.
 
 ## ✅ Why This Design is Strong
 
-We intentionally chose:
+I intentionally chose:
 - **Turn-based capture** over streaming  
 - **OCR + human summary** over pure vision models  
 - **Light analysis before LLM** instead of raw text dumping  
@@ -156,7 +157,7 @@ These are **engineering decisions, not shortcuts.**
 
 ## ⚠️ Limitations
 
-We are transparent about what this system does *not* do:
+I am transparent about what this system does *not* do:
 
 - No true multimodal vision reasoning  
 - Diagrams without text still need a human summary  
