@@ -251,7 +251,7 @@ st.sidebar.info("EasyOCR + Ollama (Mistral) — offline, turn-based.")
 # STEP 1 — CAPTURE SCREEN (EVERY TURN)
 # -------------------------------
 st.divider()
-st.subheader("📸 Step 1 — Capture what you're presenting")
+st.subheader("📸 Show what you're presenting")
 
 image_input = st.file_uploader(
     "Upload screenshot of your screen",
@@ -267,74 +267,117 @@ if image_input:
     st.success("Extracted screen text:")
     st.code(screen_text)
 
-    # Force human summary (important)
-    summary = st.text_input(
-        "1-line summary of what is shown (e.g., '3-tier backend diagram')",
-        key=f"summary_{len(st.session_state.answers)}"
-    )
-    st.session_state.screen_summary = summary
+    
 
-    # Generate first question if none exists
-    if not st.session_state.current_question:
-        st.session_state.image_turn = 0
-        with st.spinner("Generating first question..."):
-            q = ask_ollama(
-                st.session_state.screen_text,
-                st.session_state.screen_summary,
-                st.session_state.history
+    
+    
+    if image_input:
+
+        with st.form(key=f"summary_form_{len(st.session_state.answers)}"):
+
+            summary = st.text_input(
+                "Explain what is shown on this screen"
             )
-            st.session_state.current_question = q
 
-# -------------------------------
-# STEP 2 — AI QUESTION
-# -------------------------------
-st.divider()
+            submitted = st.form_submit_button("Ask interviewer")
 
-if st.session_state.current_question:
-    st.subheader("🤖 Step 2 — AI Question")
-    st.write(st.session_state.current_question)
+            if submitted:
+                st.session_state.screen_summary = summary
+                st.session_state.image_turn = 0
+
+                with st.spinner("Thinking..."):
+                    q = ask_ollama(
+                        st.session_state.screen_text,
+                        st.session_state.screen_summary,
+                        st.session_state.history
+                    )
+
+                st.session_state.current_question = q
+                st.rerun()
+
+
+
 
 # -------------------------------
 # STEP 3 — STUDENT ANSWER
 # -------------------------------
-answer = st.text_area("Step 3 — Your answer (type here)")
+if st.session_state.current_question:
 
-if st.button("Submit Answer"):
+    st.subheader("👨‍💼 Interview Question")
+    st.write(st.session_state.current_question)
 
-    if not st.session_state.screen_text:
-        st.warning("Upload a screenshot first.")
-        st.stop()
+    answer = st.text_area("Your answer")
 
-    st.session_state.answers.append(answer)
-    turns_done = len(st.session_state.answers)
+    if st.button("Submit Answer"):
 
-    # ---- CASE 1: Ask second question on SAME IMAGE ----
-    if st.session_state.last_intent == "UNDERSTAND":
-        next_q = ask_ollama(
-            st.session_state.screen_text,
-            st.session_state.screen_summary,
-            st.session_state.history,
-            last_answer=answer
-        )
-        st.session_state.current_question = next_q
+        st.session_state.answers.append(answer)
+        turns_done = len(st.session_state.answers)
+
+        # ---- CASE 1: Ask second question on SAME IMAGE ----
+        if st.session_state.last_intent == "UNDERSTAND":
+            next_q = ask_ollama(
+                st.session_state.screen_text,
+                st.session_state.screen_summary,
+                st.session_state.history,
+                last_answer=answer
+            )
+            st.session_state.current_question = next_q
+            st.rerun()
+
+        # ---- CASE 2: Finish interview after 4 answers ----
+        if turns_done >= 4:
+            scores = compute_scores(st.session_state.answers)
+            st.subheader("📊 Scoring & Feedback")
+            st.json(scores)
+            plot_radar(scores)
+            st.stop()
+
+        # ---- CASE 3: Move to next image ----
+        st.session_state.screen_text = ""
+        st.session_state.screen_summary = ""
+        st.session_state.current_question = None
+        st.session_state.last_intent = None
+        st.session_state.image_turn = 0
+
+        st.info("Show the next screen when you're ready.")
         st.rerun()
 
-    # ---- CASE 2: Finish interview after 4 answers ----
-    if turns_done >= 4:
-        with st.spinner("Computing scores..."):
-            scores = compute_scores(st.session_state.answers)
+# if st.button("Submit Answer"):
 
-        st.subheader("📊 Scoring & Feedback")
-        st.json(scores)
-        plot_radar(scores)
-        st.stop()
+#     if not st.session_state.screen_text:
+#         st.warning("Upload a screenshot first.")
+#         st.stop()
 
-    # ---- CASE 3: Move to next image (after Q2 answered) ----
-    st.session_state.screen_text = ""
-    st.session_state.screen_summary = ""
-    st.session_state.current_question = None
-    st.session_state.last_intent = None   # RESET for next image
-    st.session_state.image_turn = 0
+#     st.session_state.answers.append(answer)
+#     turns_done = len(st.session_state.answers)
 
-    st.success("Upload next screenshot")
-    st.rerun()
+#     # ---- CASE 1: Ask second question on SAME IMAGE ----
+#     if st.session_state.last_intent == "UNDERSTAND":
+#         next_q = ask_ollama(
+#             st.session_state.screen_text,
+#             st.session_state.screen_summary,
+#             st.session_state.history,
+#             last_answer=answer
+#         )
+#         st.session_state.current_question = next_q
+#         st.rerun()
+
+#     # ---- CASE 2: Finish interview after 4 answers ----
+#     if turns_done >= 4:
+#         with st.spinner("Computing scores..."):
+#             scores = compute_scores(st.session_state.answers)
+
+#         st.subheader("📊 Scoring & Feedback")
+#         st.json(scores)
+#         plot_radar(scores)
+#         st.stop()
+
+#     # ---- CASE 3: Move to next image (after Q2 answered) ----
+#     st.session_state.screen_text = ""
+#     st.session_state.screen_summary = ""
+#     st.session_state.current_question = None
+#     st.session_state.last_intent = None   # RESET for next image
+#     st.session_state.image_turn = 0
+
+#     st.success("Upload next screenshot")
+#     st.rerun()
