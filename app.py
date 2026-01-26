@@ -135,46 +135,57 @@ def ask_ollama(screen_text, screen_summary, history, last_answer=None):
     if last_answer:
         history.append(f"Student: {last_answer}")
 
+    # ---- 1. EXTRACT LAST QUESTION (THE ANCHOR) ----
+    last_question = "None (First turn)"
+    for msg in reversed(history):
+        if msg.startswith("AI:"):
+            last_question = msg.replace("AI:", "").strip()
+            break
+
     # ---- Decide intent (UNDERSTAND → PROBE cycle) ----
     if st.session_state.image_turn == 0:
         intent = "UNDERSTAND"
     elif st.session_state.image_turn == 1:
         intent = "PROBE"
     else:
-        intent = "UNDERSTAND"   # should rarely happen
+        intent = "UNDERSTAND" 
 
     st.session_state.last_intent = intent
 
-    # ---- Screen analysis ----
+    # ---- Screen analysis & Logic ----
+    # (Assuming you are using the robust classification we discussed earlier)
+    # For now, keeping your structure to minimize rewrite noise:
+    
     screen_type = classify_screen(screen_text)
     st.session_state.screen_type = screen_type
-
-    clean_text = "\n".join(
-        line.split(" (conf=")[0] for line in screen_text.splitlines()
-    )
-
+    
+    clean_text = "\n".join(line.split(" (conf=")[0] for line in screen_text.splitlines())
+    
+    # Pre-analysis context
     code_issues = analyze_code(clean_text) if screen_type == "CODE" else []
     components = extract_components(clean_text) if screen_type == "ARCHITECTURE" else []
     ui_risks = analyze_ui(clean_text) if screen_type == "UI" else []
 
+    # ---- 2. THE HARD CONSTRAINT PROMPT ----
     prompt = f"""
-You are a senior technical interviewer.
+You are a technical interviewer.
 
-IMPORTANT: Your question must be based primarily on the CURRENT SCREEN,
-even if the conversation history discusses other images or topics.
+IMPORTANT: Your question must be based primarily on the CURRENT SCREEN.
 
 SCREEN TYPE: {screen_type}
-
 VISIBLE TEXT:
 {clean_text}
 
 HUMAN SUMMARY:
 {screen_summary}
 
-PRE-ANALYSIS:
+PRE-ANALYSIS (Use this for PROBE phase only):
 Code issues: {code_issues}
 Components: {components}
 UI risks: {ui_risks}
+
+PREVIOUS QUESTION (DO NOT REPEAT OR REPHRASE):
+"{last_question}"
 
 CONVERSATION HISTORY:
 {' '.join(history)}
@@ -183,25 +194,11 @@ CURRENT INTENT: {intent}
 
 IF intent is UNDERSTAND:
 Ask ONE high-level question to understand what this screen does.
+Constraint: Do not ask about bugs, risks, or edge cases yet.
 
 IF intent is PROBE:
-You MUST NOT repeat the goal of the previous question.
-
-Your question must:
-- Assume the interviewer already understands WHAT the code/UI does
-- Focus on WHEN it breaks, scales poorly, or produces incorrect results
-- Target system-level risks, not trivial conditions
-
-BAD QUESTIONS (DO NOT ASK):
-- What does this function do?
-- What is an edge case when X equals Y?
-- Restating the same concept in different words
-
-GOOD QUESTIONS:
-- What assumption does this logic rely on that could silently fail?
-- How does this behave under invalid or extreme inputs?
-- What real-world condition would break this design?
-
+Pick ONE specific element visible on the screen and ask about a failure mode, edge case, or limitation.
+Constraint: You MUST change the dimension. Do not ask a variation of the Previous Question.
 
 RULES:
 - Ask exactly ONE question.
@@ -219,7 +216,6 @@ RULES:
     history.append(f"AI: {question}")
     st.session_state.image_turn += 1
     return question
-
 
 # -------------------------------
 # MORE CREDIBLE SCORING
